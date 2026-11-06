@@ -177,7 +177,7 @@ opencode auth login   # 选 Meoo
 
 ```bash
 node --check index.mjs && node --check opencode.mjs
-node --test test/offline.test.mjs   # 19 项：假 fetch + 假 client，含浏览器 PKCE loopback 全流程
+node --test test/offline.test.mjs   # 23 项：假 fetch + 假 client，含浏览器 PKCE loopback 全流程
 ```
 
 Windows 沙箱里跑测试要关掉测试隔离（沙箱禁命名管道，`spawn EPERM`）：
@@ -186,14 +186,29 @@ Windows 沙箱里跑测试要关掉测试隔离（沙箱禁命名管道，`spawn
 node --test --test-isolation=none test/offline.test.mjs
 ```
 
-## 作者
+## 作者与致谢
 
-- [Fish-under-sea](https://github.com/Fish-under-sea)：独立 npm 包化、仓库与发版维护，外层显示名（Meoo）与包名呈现。
-- [Chensy（elysia395）](https://github.com/elysia395)：Magpie 供应商插件形态的设计与实现，见 [FISH-DOCK-Plugins PR #35](https://github.com/Fish-under-sea/FISH-DOCK-Plugins/pull/35)。
+### 维护
 
-## 派生声明
+- [Fish-under-sea](https://github.com/Fish-under-sea)：独立 npm 包化、仓库与发版，外层显示名（Meoo）与包名呈现，模型规格表与积分余额卡。
 
-本项目是 [2239058652/dsh-meoo-connect](https://github.com/2239058652/dsh-meoo-connect)（MIT，基线 [sangonomiya249/dsh-meoo](https://github.com/sangonomiya249/dsh-meoo) `cf77e92` 衍生）向 Magpie/OpenCode 插件平面的迁移移植，插件形态与代码出自 [FISH-DOCK-Plugins PR #35](https://github.com/Fish-under-sea/FISH-DOCK-Plugins/pull/35)；`opencode2.mjs` 适配层整份取自 [magpie-community/plugins](https://github.com/magpie-community/plugins) 的同名字节（MIT）。详见 `THIRD_PARTY_NOTICES.md`。
+### 上游作者
+
+- [Chensy（elysia395）](https://github.com/elysia395)：本插件的 Magpie 供应商插件形态与实现，见 [FISH-DOCK-Plugins PR #35](https://github.com/Fish-under-sea/FISH-DOCK-Plugins/pull/35)。这个 npm 包就是该 PR 里的插件本体，作者同为上游作者之一。
+- [2239058652/dsh-meoo-connect](https://github.com/2239058652/dsh-meoo-connect)：Meoo OAuth(PKCE)、控制面（身份 / 项目 / 云服务 AK）、网关模型目录的原始实现。`index.mjs` 的登录与取 AK 链路由这里移植而来。
+- [sangonomiya249/dsh-meoo](https://github.com/sangonomiya249/dsh-meoo)（基线 `cf77e92`）：dsh-meoo-connect 的上游，版权归其作者所有。
+- [magpie-community/plugins](https://github.com/magpie-community/plugins)：`opencode2.mjs`（OpenCode 2.x 适配层）整份取自该仓库，按「每个包携带同一份字节」的约定未做修改。
+- [yetone/magpie](https://github.com/yetone/magpie)：供应商插件契约（`config` / `provider.models` / `auth`）、`magpie.name` 与预付费钱包窗口的宿主实现；「外层短名 + 详情包名」的呈现由它决定。
+
+### 资料出处
+
+- Meoo 秒悟官方（[meoo.com](https://meoo.com) / [docs.meoo.com](https://docs.meoo.com)）：AI 服务协议、模型清单，以及本包规格表里的上下文与输出上限。本项目是第三方集成，与官方无隶属关系。
+
+### 相关但不同的项目
+
+- [RexVane/magpie-plugin-meoo-agent](https://github.com/RexVane/magpie-plugin-meoo-agent)：走 Meoo 的 Agent 接口（`/open/v1/projects/<id>/agent/runs`），覆盖 Kimi K3、GLM-5.3 等本插件网关调不到的模型。两者 provider id 不同（`meoo` 与 `meoo-agent`），可同时安装。
+
+各上游的许可证与使用范围见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ## License
 
