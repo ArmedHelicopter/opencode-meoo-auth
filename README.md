@@ -40,6 +40,30 @@ OpenCode & Magpie provider plugin for **Meoo 秒悟**（`meoo.com`）。npm 包�
 - **`qwen3-vl-plus` 不在网关 `/models` 里**，但 Meoo 文档给了、网关也接（实测可调）。插件拉目录时会用一次 1-token 的探针试它，接了就补进目录，否则不提——不写死一个调不通的模型。
 - **目录里出现表外的新模型**按保守值给（200K 上下文 / 64K 输出、纯文本），不会把 1M 随手许出去；要正式支持就把它加进 `MODEL_SPECS`。
 
+### 为什么 Kimi K3 / GLM-5.3 / MiniMax 没出现
+
+Meoo 文档的「支持模型介绍」把 Kimi K3、Kimi K3.1 Pro、GLM-5.3、GLM-5.3-Flash、MiniMax M3.1 Flash、Qwen3.8-Max-0902 都算作平台模型，但**项目的 OpenAI 兼容网关只收这 9 个文本 id**（2026-11 实测，其余一律 400）：
+
+```
+当前仅支持配置模型: qwen3.8-flash、qwen3.8-max、qwen3.7-max、qwen3.7-plus、
+deepseek-v4.1-flash-1017、deepseek-v4-pro-0813、deepseek-v4-flash-0731、
+glm-5.2-fast-preview、glm-5.2
+```
+
+Kimi / GLM-5.3 / MiniMax 在 Meoo 的 **Agent 产品**里（`/open/v1/projects/<id>/agent/runs`，SSE 协议，不是 OpenAI 兼容），想用它们装 [`magpie-plugin-meoo-agent`](https://github.com/RexVane/magpie-plugin-meoo-agent)。两个插件可以并存：`meoo` 与 `meoo-agent` 是两个 provider id，不抢同名 key。
+
+插件仍然会把上面这些候选逐个探一遍（并发 4 条、1 token、结果随目录缓存 10 分钟）：**Meoo 哪天在网关放开哪个，下次拉目录就自动出现**，不用等发版。
+
+### 自己加模型
+
+网关接了但目录没列、插件也不认识的 id，用环境变量塞进去（仍然要过那一探，不接的不进目录）：
+
+```bash
+MEOO_EXTRA_MODELS=my-model-a,my-model-b
+```
+
+未知 id 一律按 200K / 64K、纯文本处理；想给它正确的上下文，就往 `MODEL_SPECS` 里加一条。
+
 ## 余额
 
 浏览器授权登录后，供应商卡片会带一张积分卡（控制面 `/open/v1/cli-compat/account/points`）：

@@ -71,12 +71,37 @@ const MODEL_SPECS = [
 ]
 
 /**
- * 文档里写了、网关 /models 却不一定列出来的模型：拉目录时用一次 1-token 的
- * 请求探一下，网关接了才放进目录。
- * qwen3-vl-plus 就是这样：Meoo 文档「视觉理解」一节里的唯一模型，2026-11 实测
- * 网关可调，但 /models 只回 9 个文本 id，不探就永远看不见。
+ * 候选模型：文档里写了、网关 /models 却不一定列出来的 id。
+ *
+ * 2026-11 实测：Meoo 文档「支持模型介绍」把 Kimi K3 / K3.1 Pro、GLM-5.3 / 5.3-Flash、
+ * MiniMax M3.1 Flash、Qwen3.8-Max-0902 都算作平台模型，但项目的 OpenAI 兼容网关
+ * （/meoo-ai/compatible-mode/v1）只收 9 个文本 id：
+ *   qwen3.8-flash、qwen3.8-max、qwen3.7-max、qwen3.7-plus、deepseek-v4.1-flash-1017、
+ *   deepseek-v4-pro-0813、deepseek-v4-flash-0731、glm-5.2-fast-preview、glm-5.2
+ * 其余一律 400「当前仅支持配置模型: …」。Kimi / GLM-5.3 / MiniMax 走的是 Meoo 的
+ * Agent 产品（/open/v1/projects/<id>/agent/runs），不是这个网关——那是
+ * magpie-plugin-meoo-agent 的活。
+ *
+ * 所以这里逐个探：网关接了才进目录，不接就当它不存在。Meoo 哪天放开，插件下次
+ * 拉目录就自动带上，不需要发版。qwen3-vl-plus 就是这样被探出来的（文档写了、
+ * /models 不列、网关可调）。
  */
-const SUPPLEMENT_MODELS = ["qwen3-vl-plus"]
+const SUPPLEMENT_MODELS = [
+  "qwen3-vl-plus", // 视觉理解：实测可用
+  "qwen3.8-max-0902",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "kimi-k3",
+  "kimi-k3.1-pro",
+  "minimax-m3.1-flash",
+]
+
+/** 用户自己往目录里塞 id：逗号分隔。仍然要过网关那一探，不接的不进目录。 */
+const extraModels = () =>
+  String(process.env.MEOO_EXTRA_MODELS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
 
 const MODEL_BY_ID = new Map(MODEL_SPECS.map((m) => [m.id, m]))
 
@@ -411,6 +436,21 @@ async function acceptsModel(ak, id) {
   }
 }
 
+/** 并发探多个 id，限速 4 条同时，别把网关打满。 */
+async function probeModels(ak, ids) {
+  const out = []
+  const queue = [...ids]
+  const worker = async () => {
+    for (;;) {
+      const id = queue.shift()
+      if (!id) return
+      if (await acceptsModel(ak, id)) out.push(id)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker))
+  return out
+}
+
 async function fetchGatewayModels(ak) {
   const base = gatewayBase()
   if (catalogCache.models && catalogCache.origin === base && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
@@ -424,9 +464,9 @@ async function fetchGatewayModels(ak) {
   const models = parseGatewayModels(await res.json())
   if (!models.length) throw new Error("empty catalog")
   const seen = new Set(models.map((m) => m.id))
-  for (const id of SUPPLEMENT_MODELS) {
-    if (seen.has(id)) continue
-    if (!(await acceptsModel(ak, id))) continue
+  // 文档里有、目录里没有的 id 逐个探；接了就补进目录，不接的不进。
+  const missing = [...new Set([...SUPPLEMENT_MODELS, ...extraModels()])].filter((id) => !seen.has(id))
+  for (const id of await probeModels(ak, missing)) {
     const spec = specOf(id)
     models.push({ id, name: spec.name, context: spec.context, output: spec.output, image: !!spec.image })
   }
@@ -834,7 +874,9 @@ export const MeooAuthPlugin = async ({ client }) => {
         const used = int(acc.totalConsumed)
         const frozen = int(acc.frozenBalance)
         const fmt = (n) => new Intl.NumberFormat("en-US").format(n)
-        const wallet = { name: "积分", balance: left, unit: "积分" }
+        // 钱包窗口：新版 magpie 认 window.balance（不画百分比条、只显示数字）；
+        // 旧版会把它当纯文本窗口，所以同时给 display —— 两种宿主都能看到余额。
+        const wallet = { name: "积分", balance: left, unit: "积分", display: `${fmt(left)} 积分` }
         const lapse = soonestLapse(data?.activeGrants)
         if (lapse) wallet.runsOutAt = lapse
         const windows = [wallet]

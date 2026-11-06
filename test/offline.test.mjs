@@ -103,7 +103,7 @@ test("parseGatewayModels：字符串条目、对象条目、models/data 两种�
   assert.deepEqual(parseGatewayModels({}), [])
 })
 
-test("fetchGatewayModels：带 AK 请求网关并缓存；目录外的模型探一次", async () => {
+test("fetchGatewayModels：带 AK 请求网关并缓存；目录外的候选各探一次", async () => {
   process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
   resetCatalogCache()
   await withFetch(async (fetchMock) => {
@@ -111,20 +111,21 @@ test("fetchGatewayModels：带 AK 请求网关并缓存；目录外的模型探�
     assert.equal(ms.length, 2)
     assert.equal(fetchMock.calls[0].url, `${GATEWAY}/models`)
     assert.equal(fetchMock.calls[0].init.headers.authorization, "Bearer ak-1")
-    // 目录外的 qwen3-vl-plus 探一次，网关回 400 → 不补进目录
-    const probe = fetchMock.calls.find((c) => c.url.includes("/chat/completions"))
-    assert.ok(probe, "应该对 SUPPLEMENT_MODELS 探一次")
-    assert.match(String(probe.init.body), /"max_tokens":1/)
+    // 目录外的候选（kimi/glm-5.3/minimax/vl…）各探一次；全被网关拒 → 一个都不补
+    const probes = fetchMock.calls.filter((c) => c.url.includes("/chat/completions"))
+    assert.ok(probes.length >= 6, `候选应该各探一次，实际 ${probes.length}`)
+    for (const p of probes) assert.match(String(p.init.body), /"max_tokens":1/)
     // 第二次命中缓存，不再发请求
+    const before = fetchMock.calls.length
     await fetchGatewayModels("ak-1")
-    assert.equal(fetchMock.calls.length, 2)
+    assert.equal(fetchMock.calls.length, before)
   }, [
     [/\/models/, () => json({ models: [{ id: "glm-5.2" }, { id: "qwen3.8-max" }] })],
     [/\/chat\/completions/, () => json({ error: { message: "unsupported" } }, 400)],
   ])
 })
 
-test("fetchGatewayModels：网关接受的目录外模型补进目录（qwen3-vl-plus）", async () => {
+test("fetchGatewayModels：网关接受的目录外模型补进目录（qwen3-vl-plus），拒绝的不进", async () => {
   process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
   resetCatalogCache()
   await withFetch(async (fetchMock) => {
@@ -134,12 +135,35 @@ test("fetchGatewayModels：网关接受的目录外模型补进目录（qwen3-vl
     assert.equal(vl.context, 262_144)
     assert.equal(vl.output, 32_768)
     assert.equal(vl.image, true)
-    const probe = fetchMock.calls.find((c) => c.url.includes("/chat/completions"))
-    assert.match(String(probe.init.body), /qwen3-vl-plus/)
+    // 文档里写了但网关不接的（Kimi/GLM-5.3/MiniMax）不该混进来
+    assert.equal(ms.find((m) => m.id === "kimi-k3"), undefined)
+    assert.equal(ms.find((m) => m.id === "glm-5.3"), undefined)
+    const probe = fetchMock.calls.find((c) => c.url.includes("/chat/completions") && String(c.init.body).includes("qwen3-vl-plus"))
+    assert.ok(probe, "应该探过 qwen3-vl-plus")
   }, [
     [/\/models/, () => json({ models: ["glm-5.2"] })],
-    [/\/chat\/completions/, () => json({ choices: [{ message: { content: "H" } }] })],
+    [/\/chat\/completions/, (url, init) => (String(init.body).includes("qwen3-vl-plus") ? json({ choices: [{ message: { content: "H" } }] }) : json({ error: { message: "当前仅支持配置模型" } }, 400))],
   ])
+})
+
+test("fetchGatewayModels：MEOO_EXTRA_MODELS 里的 id 也要过网关那一探", async () => {
+  process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
+  process.env.MEOO_EXTRA_MODELS = "my-private-model, qwen3-vl-plus"
+  resetCatalogCache()
+  try {
+    await withFetch(async (fetchMock) => {
+      const ms = await fetchGatewayModels("ak-1")
+      assert.ok(ms.find((m) => m.id === "my-private-model"), "自己塞的 id 网关接了就应该出现")
+      const probe = fetchMock.calls.find((c) => String(c.init.body).includes("my-private-model"))
+      assert.ok(probe)
+    }, [
+      [/\/models/, () => json({ models: ["glm-5.2"] })],
+      [/\/chat\/completions/, (url, init) => (String(init.body).includes("my-private-model") ? json({ choices: [] }) : json({ error: {} }, 400))],
+    ])
+  } finally {
+    delete process.env.MEOO_EXTRA_MODELS
+    resetCatalogCache()
+  }
 })
 
 test("configModels/runtimeModel：规格表给出真实上限，视觉模型按图片能力", () => {
@@ -583,8 +607,8 @@ test("usage：积分按钱包窗口给出（余额/已用/最近到期）", asyn
     const u = await hooks.auth.usage(async () => auth)
     assert.equal(u.user, "Fishundersea")
     assert.equal(u.balance, "58,848 积分")
-    // 钱包窗口：只有 balance + unit，没有 used/limit（卡片显示数字，不画百分比）
-    assert.deepEqual(u.windows[0], { name: "积分", balance: 58848, unit: "积分", runsOutAt: "2026-11-10" })
+    // 钱包窗口：balance + unit（新宿主），同时带 display（旧宿主当纯文本窗口）
+    assert.deepEqual(u.windows[0], { name: "积分", balance: 58848, unit: "积分", display: "58,848 积分", runsOutAt: "2026-11-10" })
     assert.equal(u.windows[1].name, "已用")
     assert.equal(u.windows[1].display, "2,152 积分")
     assert.equal(u.windows[1].aside, true)
