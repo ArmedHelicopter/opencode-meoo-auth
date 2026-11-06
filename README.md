@@ -2,7 +2,19 @@
 
 OpenCode & Magpie provider plugin for **Meoo 秒悟**（`meoo.com`）。npm 包名 `@fish-under-sea/opencode-meoo-auth`。
 
-在 Magpie 的插件/供应商列表里，外层显示名是 **Meoo**；点进插件详情，看到的是完整包名 `@fish-under-sea/opencode-meoo-auth`——外层短名由插件的 `provider.name` 给出，完整包名由宿主读到的插件 spec 给出，与官方插件（`@magpie-community/opencode-*-auth`）的呈现方式一致。
+在 Magpie 的插件界面里，名字是两层：**外层短名 `Meoo`**（「已安装」那一行、插件卡片的标题、供应商卡片），**点进插件详情**看到的是 `npm · @fish-under-sea/opencode-meoo-auth`（npm 发布者 + 完整包名）。这与官方插件（卡片上 `magpie 社区 · @magpie-community/…`）同一套呈现：短名由 `package.json` 的 `magpie.name` 给出（社区列表没收录时生效），详情里的包名由宿主读到的插件 spec 给出。
+
+```json
+"magpie": {
+  "name": "Meoo",
+  "summary": {
+    "zh": "用自己的 Meoo 秒悟账号使用 Meoo 网关上的模型——浏览器 PKCE 授权、复用本机登录态或项目服务 AK，模型目录实时同步。",
+    "en": "Meoo 秒悟 (meoo.com) in magpie: sign in with your own Meoo account and its gateway's models show up as one provider, with usage-billed tokens."
+  }
+}
+```
+
+`magpie.name` 最多 80 字节、必须单行、不能含控制或双向格式字符，否则整条忽略（回落成包名）；`summary` 按语言给一句，最多 300 字节。
 
 作者：[@Fish-under-sea](https://github.com/Fish-under-sea)、[Chensy（elysia395）](https://github.com/elysia395)。本包由 [FISH-DOCK-Plugins PR #35](https://github.com/Fish-under-sea/FISH-DOCK-Plugins/pull/35) 的 Magpie 供应商插件落成独立 npm 包；代码源头是 [dsh-meoo-connect](https://github.com/2239058652/dsh-meoo-connect)（DeepSeek Harness 的 dsh 插件）：同一套 Meoo 官方「AI 服务」链路（OAuth 登录 → 项目服务 AK → OpenAI 兼容网关），换到 Magpie / OpenCode 的 provider 插件平面上。装好并登录后，Meoo 的模型会出现在 Magpie 的模型选择器里，也作为 OpenCode 的一个 provider。
 
