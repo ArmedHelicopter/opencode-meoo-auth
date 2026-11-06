@@ -1,7 +1,7 @@
 {
   "name": "@fish-under-sea/opencode-meoo-auth",
-  "version": "1.0.2",
-  "description": "Meoo 秒悟 (meoo.com) in OpenCode and Magpie: browser PKCE sign-in, reuse of a local dsh-meoo-connect / meoo-proxy sign-in, or a project service AK, with a live model catalog",
+  "version": "1.1.0",
+  "description": "Meoo 秒悟 (meoo.com) in OpenCode and Magpie: PKCE sign-in, reuse of a local dsh-meoo-connect state or a project service AK, a live catalog with each model's real context window, and the account's points balance",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": {

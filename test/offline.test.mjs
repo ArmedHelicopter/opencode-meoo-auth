@@ -103,7 +103,7 @@ test("parseGatewayModels：字符串条目、对象条目、models/data 两种�
   assert.deepEqual(parseGatewayModels({}), [])
 })
 
-test("fetchGatewayModels：带 AK 请求网关并缓存", async () => {
+test("fetchGatewayModels：带 AK 请求网关并缓存；目录外的模型探一次", async () => {
   process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
   resetCatalogCache()
   await withFetch(async (fetchMock) => {
@@ -111,18 +111,53 @@ test("fetchGatewayModels：带 AK 请求网关并缓存", async () => {
     assert.equal(ms.length, 2)
     assert.equal(fetchMock.calls[0].url, `${GATEWAY}/models`)
     assert.equal(fetchMock.calls[0].init.headers.authorization, "Bearer ak-1")
+    // 目录外的 qwen3-vl-plus 探一次，网关回 400 → 不补进目录
+    const probe = fetchMock.calls.find((c) => c.url.includes("/chat/completions"))
+    assert.ok(probe, "应该对 SUPPLEMENT_MODELS 探一次")
+    assert.match(String(probe.init.body), /"max_tokens":1/)
     // 第二次命中缓存，不再发请求
     await fetchGatewayModels("ak-1")
-    assert.equal(fetchMock.calls.length, 1)
-  }, [[/\/models/, () => json({ models: [{ id: "glm-5.2" }, { id: "qwen3.8-max" }] })]])
+    assert.equal(fetchMock.calls.length, 2)
+  }, [
+    [/\/models/, () => json({ models: [{ id: "glm-5.2" }, { id: "qwen3.8-max" }] })],
+    [/\/chat\/completions/, () => json({ error: { message: "unsupported" } }, 400)],
+  ])
 })
 
-test("configModels/runtimeModel：兜底模型与运行期模型形状", () => {
+test("fetchGatewayModels：网关接受的目录外模型补进目录（qwen3-vl-plus）", async () => {
+  process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
+  resetCatalogCache()
+  await withFetch(async (fetchMock) => {
+    const ms = await fetchGatewayModels("ak-1")
+    const vl = ms.find((m) => m.id === "qwen3-vl-plus")
+    assert.ok(vl, "视觉模型应该被补进目录")
+    assert.equal(vl.context, 262_144)
+    assert.equal(vl.output, 32_768)
+    assert.equal(vl.image, true)
+    const probe = fetchMock.calls.find((c) => c.url.includes("/chat/completions"))
+    assert.match(String(probe.init.body), /qwen3-vl-plus/)
+  }, [
+    [/\/models/, () => json({ models: ["glm-5.2"] })],
+    [/\/chat\/completions/, () => json({ choices: [{ message: { content: "H" } }] })],
+  ])
+})
+
+test("configModels/runtimeModel：规格表给出真实上限，视觉模型按图片能力", () => {
   process.env.MEOO_GATEWAY_BASE_URL = GATEWAY
   const cm = configModels()
   assert.equal(cm["glm-5.2"].name, "GLM-5.2")
-  assert.equal(cm["glm-5.2"].limit.context, 200_000)
+  // 之前写死 200k，实际 GLM-5.2 是 1M 上下文 / 128K 输出
+  assert.equal(cm["glm-5.2"].limit.context, 1_000_000)
+  assert.equal(cm["glm-5.2"].limit.output, 128_000)
+  assert.equal(cm["deepseek-v4-pro-0813"].limit.context, 1_000_000)
+  assert.equal(cm["deepseek-v4-pro-0813"].limit.output, 384_000)
+  assert.equal(cm["qwen3.8-max"].limit.output, 131_072)
   assert.equal(cm["glm-5.2"].tool_call, true)
+  // 视觉模型：目录里没有，但规格表里有，预登录阶段就该看得见
+  assert.equal(cm["qwen3-vl-plus"].limit.context, 262_144)
+  assert.equal(cm["qwen3-vl-plus"].attachment, true)
+  assert.deepEqual(cm["qwen3-vl-plus"].modalities.input, ["text", "image"])
+  assert.equal(cm["glm-5.2"].attachment, false)
   // 思考档位三档：映射成 AI SDK 的 reasoningEffort
   assert.deepEqual(cm["glm-5.2"].variants, {
     low: { reasoningEffort: "low" },
@@ -130,11 +165,17 @@ test("configModels/runtimeModel：兜底模型与运行期模型形状", () => {
     high: { reasoningEffort: "high" },
   })
   const provider = { id: "meoo" }
-  const rm = runtimeModel(provider, { id: "glm-5.2", name: "GLM-5.2", context: 200_000, output: 64_000 })
+  const rm = runtimeModel(provider, { id: "glm-5.2", name: "GLM-5.2" })
   assert.equal(rm.providerID, "meoo")
   assert.equal(rm.api.npm, "@ai-sdk/openai-compatible")
   assert.equal(rm.api.url, GATEWAY)
   assert.equal(rm.capabilities.toolcall, true)
+  assert.equal(rm.limit.context, 1_000_000)
+  // 目录里的未知 id 走保守默认，不把 1M 乱许出去
+  const unk = runtimeModel(provider, { id: "brand-new-model" })
+  assert.equal(unk.limit.context, 200_000)
+  assert.equal(unk.limit.output, 64_000)
+  assert.equal(unk.capabilities.input.image, false)
   assert.deepEqual(rm.variants, {
     low: { reasoningEffort: "low" },
     medium: { reasoningEffort: "medium" },
@@ -514,6 +555,50 @@ test("refresh 钩子：oauth 账号续期并保留 AK/项目字段；api 账号�
     assert.equal(next.apiBase, "https://meoo.test")
     assert.equal(client.saved.length, 1)
   }, [[/\/oauth\/token/, () => json(OK_TOKEN)]])
+})
+
+// ---- 余额（usage）-----------------------------------------------------------
+
+test("usage：积分按钱包窗口给出（余额/已用/最近到期）", async () => {
+  const { hooks } = await plugin(fakeClient())
+  const auth = {
+    type: "oauth", apiBase: "https://meoo.test", access: "acc-1", refresh: "ref-1",
+    expires: Date.now() + 3600_000, username: "Fishundersea",
+  }
+  const points = {
+    data: {
+      account: { availableBalance: 58848, frozenBalance: 0, totalGranted: 65000, totalConsumed: 2152 },
+      activeGrants: [
+        { grantDetails: [{ remainingAmount: 5000, expiresDate: "2026-12-02T23:59:59" }] },
+        {
+          grantDetails: [
+            { remainingAmount: 1933, expiresDate: "2026-11-10T23:59:59" },
+            { remainingAmount: 0, expiresDate: "2026-11-01T23:59:59" },
+          ],
+        },
+      ],
+    },
+  }
+  await withFetch(async (mock) => {
+    const u = await hooks.auth.usage(async () => auth)
+    assert.equal(u.user, "Fishundersea")
+    assert.equal(u.balance, "58,848 积分")
+    // 钱包窗口：只有 balance + unit，没有 used/limit（卡片显示数字，不画百分比）
+    assert.deepEqual(u.windows[0], { name: "积分", balance: 58848, unit: "积分", runsOutAt: "2026-11-10" })
+    assert.equal(u.windows[1].name, "已用")
+    assert.equal(u.windows[1].display, "2,152 积分")
+    assert.equal(u.windows[1].aside, true)
+    const call = mock.calls.find((c) => c.url.includes("/account/points"))
+    assert.equal(call.init.headers.authorization, "Bearer acc-1")
+  }, [[/\/account\/points/, () => json(points)]])
+})
+
+test("usage：api 账号（手填 AK）读不到积分，明确报错", async () => {
+  const { hooks } = await plugin(fakeClient())
+  await assert.rejects(
+    () => hooks.auth.usage(async () => ({ type: "api", key: "meoo_project_service_v1.x" })),
+    /项目服务 AK/,
+  )
 })
 
 // ---- 浏览器 PKCE 登录（loopback 回调全流程，回调用真实 fetch 打本机端口）----------

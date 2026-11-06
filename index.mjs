@@ -44,21 +44,46 @@ const EARLY_MS = 60 * 1000
 const LEAD_MS = 5 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000
 const CATALOG_TTL_MS = 10 * 60 * 1000
+// 目录里认不出的新模型先按保守值给，等它也进规格表。
 const CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 
-/** 网关目录拿不到时的兜底清单（id → 展示名，取自 meoo 文档与控制台）。 */
-const FALLBACK_MODELS = [
-  { id: "qwen3.8-flash", name: "Qwen3.8-Flash" },
-  { id: "qwen3.8-max", name: "Qwen3.8-Max" },
-  { id: "qwen3.7-max", name: "Qwen3.7-Max" },
-  { id: "qwen3.7-plus", name: "Qwen3.7-Plus" },
-  { id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash" },
-  { id: "deepseek-v4-pro-0813", name: "DeepSeek V4 Pro" },
-  { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash" },
-  { id: "glm-5.2-fast-preview", name: "GLM-5.2-Fast" },
-  { id: "glm-5.2", name: "GLM-5.2" },
+/**
+ * 模型规格表。网关 /models 只回裸 id，不带上下文/输出上限，所以数字得自己带。
+ * 取值来自各家官方文档（2026-11 核对）：
+ *   Qwen 3.8/3.7 全家 1M 上下文 / 131072 输出；
+ *   DeepSeek V4 全家 1M / 384K；
+ *   GLM-5.2 与 GLM-5.2-Fast 1M / 128K；
+ *   Qwen VL 262144 / 32768。
+ * image 只给官方写明原生多模态的那几个，其余按纯文本，免得让 UI 递图片。
+ */
+const MODEL_SPECS = [
+  { id: "qwen3.8-flash", name: "Qwen3.8-Flash", context: 1_000_000, output: 131_072, image: true },
+  { id: "qwen3.8-max", name: "Qwen3.8-Max", context: 1_000_000, output: 131_072, image: true },
+  { id: "qwen3.7-max", name: "Qwen3.7-Max", context: 1_000_000, output: 131_072 },
+  { id: "qwen3.7-plus", name: "Qwen3.7-Plus", context: 1_000_000, output: 131_072, image: true },
+  { id: "deepseek-v4.1-flash-1017", name: "DeepSeek V4.1 Flash", context: 1_000_000, output: 384_000, image: true },
+  { id: "deepseek-v4-pro-0813", name: "DeepSeek V4 Pro", context: 1_000_000, output: 384_000 },
+  { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash", context: 1_000_000, output: 384_000 },
+  { id: "glm-5.2-fast-preview", name: "GLM-5.2-Fast", context: 1_000_000, output: 128_000 },
+  { id: "glm-5.2", name: "GLM-5.2", context: 1_000_000, output: 128_000 },
+  { id: "qwen3-vl-plus", name: "Qwen VL", context: 262_144, output: 32_768, image: true },
 ]
+
+/**
+ * 文档里写了、网关 /models 却不一定列出来的模型：拉目录时用一次 1-token 的
+ * 请求探一下，网关接了才放进目录。
+ * qwen3-vl-plus 就是这样：Meoo 文档「视觉理解」一节里的唯一模型，2026-11 实测
+ * 网关可调，但 /models 只回 9 个文本 id，不探就永远看不见。
+ */
+const SUPPLEMENT_MODELS = ["qwen3-vl-plus"]
+
+const MODEL_BY_ID = new Map(MODEL_SPECS.map((m) => [m.id, m]))
+
+/** 目录里出现的未知 id 当纯文本、给保守上限，不把 1M 乱许出去。 */
+function specOf(id) {
+  return MODEL_BY_ID.get(id) ?? { id, name: id, context: CONTEXT_WINDOW, output: DEFAULT_MAX_TOKENS }
+}
 
 const mainOrigin = () => String(process.env.MEOO_MAIN_SITE_URL || DEFAULT_API_BASE).replace(/\/+$/, "")
 const gatewayBase = () => String(process.env.MEOO_GATEWAY_BASE_URL || DEFAULT_GATEWAY).replace(/\/+$/, "")
@@ -73,12 +98,26 @@ function clientIdFor(apiBaseUrl) {
   }
 }
 
-const labelOf = (id) => FALLBACK_MODELS.find((m) => m.id === id)?.name || id
+const labelOf = (id) => specOf(id).name
 const int = (n, fallback = 0) => {
   const v = Math.trunc(Number(n))
   return Number.isFinite(v) && v >= 0 ? v : fallback
 }
 const vendorError = (json, text) => json?.detail || json?.message || String(text ?? "").slice(0, 160)
+
+/** 最近一批还没用完的积分的到期日（YYYY-MM-DD），给余额卡当提示。 */
+function soonestLapse(grants) {
+  let best = ""
+  for (const g of Array.isArray(grants) ? grants : []) {
+    for (const d of g?.grantDetails || []) {
+      if (int(d?.remainingAmount) <= 0) continue
+      const day = String(d?.expiresDate || "").slice(0, 10)
+      if (!day) continue
+      if (!best || day < best) best = day
+    }
+  }
+  return best
+}
 
 // ---- OAuth（Authorization Code + PKCE，public client）----------------------
 
@@ -342,10 +381,34 @@ function parseGatewayModels(payload) {
     const id = typeof entry === "string" ? entry.trim() : String(entry?.id ?? "").trim()
     if (!id || seen.has(id)) continue
     seen.add(id)
-    const name = typeof entry === "string" ? labelOf(id) : String(entry?.name || labelOf(id))
-    out.push({ id, name, context: int(entry?.context) || CONTEXT_WINDOW, output: int(entry?.max_output || entry?.max_output_tokens || entry?.max_tokens) || DEFAULT_MAX_TOKENS })
+    const spec = specOf(id)
+    out.push({
+      id,
+      name: (typeof entry === "object" && entry?.name) || spec.name,
+      context: int(entry?.context) || spec.context,
+      output: int(entry?.max_output || entry?.max_output_tokens || entry?.max_tokens) || spec.output,
+      image: !!spec.image,
+    })
   }
   return out
+}
+
+/**
+ * 探一个目录外的模型：1 token 的对话请求，网关接了才算可用。
+ * 只用来补 SUPPLEMENT_MODELS，结果随目录一起缓存，10 分钟最多探一次。
+ */
+async function acceptsModel(ak, id) {
+  try {
+    const res = await fetch(`${gatewayBase()}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ak}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: id, messages: [{ role: "user", content: "hi" }], max_tokens: 1, stream: false }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
 }
 
 async function fetchGatewayModels(ak) {
@@ -360,6 +423,13 @@ async function fetchGatewayModels(ak) {
   if (!res.ok) throw new Error(`模型目录 HTTP ${res.status}`)
   const models = parseGatewayModels(await res.json())
   if (!models.length) throw new Error("empty catalog")
+  const seen = new Set(models.map((m) => m.id))
+  for (const id of SUPPLEMENT_MODELS) {
+    if (seen.has(id)) continue
+    if (!(await acceptsModel(ak, id))) continue
+    const spec = specOf(id)
+    models.push({ id, name: spec.name, context: spec.context, output: spec.output, image: !!spec.image })
+  }
   catalogCache = { origin: base, models, at: Date.now() }
   return models
 }
@@ -374,40 +444,47 @@ const REASONING_VARIANTS = {
   high: { reasoningEffort: "high" },
 }
 
+function configModel(m) {
+  const spec = specOf(m.id)
+  const context = m.context ?? spec.context
+  const output = m.output ?? spec.output
+  const image = m.image ?? spec.image ?? false
+  return {
+    name: m.name ?? spec.name,
+    limit: { context, output },
+    tool_call: true,
+    reasoning: true,
+    attachment: image,
+    modalities: { input: image ? ["text", "image"] : ["text"], output: ["text"] },
+    variants: REASONING_VARIANTS,
+  }
+}
+
 function configModels() {
-  return Object.fromEntries(
-    FALLBACK_MODELS.map((m) => [
-      m.id,
-      {
-        name: m.name,
-        limit: { context: CONTEXT_WINDOW, output: DEFAULT_MAX_TOKENS },
-        tool_call: true,
-        reasoning: true,
-        attachment: false,
-        modalities: { input: ["text"], output: ["text"] },
-        variants: REASONING_VARIANTS,
-      },
-    ]),
-  )
+  return Object.fromEntries(MODEL_SPECS.map((m) => [m.id, configModel(m)]))
 }
 
 function runtimeModel(provider, m) {
+  const spec = specOf(m.id)
+  const context = m.context ?? spec.context
+  const output = m.output ?? spec.output
+  const image = m.image ?? spec.image ?? false
   return {
     id: m.id,
     providerID: provider.id,
-    name: m.name,
+    name: m.name ?? spec.name,
     api: { id: m.id, url: gatewayBase(), npm: NPM },
     status: "active",
     headers: {},
     options: {},
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-    limit: { context: m.context ?? CONTEXT_WINDOW, output: m.output ?? DEFAULT_MAX_TOKENS },
+    limit: { context, output },
     capabilities: {
       temperature: true,
       reasoning: true,
-      attachment: false,
+      attachment: image,
       toolcall: true,
-      input: { text: true, image: false, audio: false, video: false, pdf: false },
+      input: { text: true, image, audio: false, video: false, pdf: false },
       output: { text: true, image: false, audio: false, video: false, pdf: false },
       interleaved: false,
     },
@@ -739,6 +816,31 @@ export const MeooAuthPlugin = async ({ client }) => {
           ...(a.username ? { username: a.username } : {}),
           ...(a.serviceAk ? { serviceAk: a.serviceAk, serviceAkProjectId: a.serviceAkProjectId, projectUrlId: a.projectUrlId, apiBase: a.apiBase } : {}),
         }
+      },
+      // 余额：Meoo 的积分账户（控制面 /account/points）。预付费钱包按 magpie 的
+      // balance 窗口显示——这种窗口不写 used/limit，卡片显示数字而不是百分比条；
+      // 再补一条「已用」和最近一批到期日，免得只看得到余额看不到花在哪。
+      async usage(getAuth) {
+        const auth = await getAuth()
+        if (!auth) throw new Error("还没有连接 Meoo")
+        if (auth.type === "api") {
+          throw new Error("手填的项目服务 AK 读不到积分账户；要用余额卡，请用浏览器授权登录一次")
+        }
+        if (auth.type !== "oauth") throw new Error("登录态类型未知，无法读取积分")
+        const { a } = await currentAuth(ctx, auth)
+        const data = await controlRequest(ctx, a, "GET", "/open/v1/cli-compat/account/points")
+        const acc = data?.account || {}
+        const left = int(acc.availableBalance)
+        const used = int(acc.totalConsumed)
+        const frozen = int(acc.frozenBalance)
+        const fmt = (n) => new Intl.NumberFormat("en-US").format(n)
+        const wallet = { name: "积分", balance: left, unit: "积分" }
+        const lapse = soonestLapse(data?.activeGrants)
+        if (lapse) wallet.runsOutAt = lapse
+        const windows = [wallet]
+        if (used > 0) windows.push({ name: "已用", display: `${fmt(used)} 积分`, aside: true })
+        if (frozen > 0) windows.push({ name: "冻结", display: `${fmt(frozen)} 积分`, aside: true })
+        return { user: a.username || "", balance: `${fmt(left)} 积分`, windows }
       },
       async loader(getAuth) {
         const auth = await getAuth()

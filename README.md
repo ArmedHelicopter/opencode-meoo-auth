@@ -18,11 +18,38 @@ OpenCode & Magpie provider plugin for **Meoo 秒悟**（`meoo.com`）。npm 包�
 
 作者：[@Fish-under-sea](https://github.com/Fish-under-sea)、[Chensy（elysia395）](https://github.com/elysia395)。本包由 [FISH-DOCK-Plugins PR #35](https://github.com/Fish-under-sea/FISH-DOCK-Plugins/pull/35) 的 Magpie 供应商插件落成独立 npm 包；代码源头是 [dsh-meoo-connect](https://github.com/2239058652/dsh-meoo-connect)（DeepSeek Harness 的 dsh 插件）：同一套 Meoo 官方「AI 服务」链路（OAuth 登录 → 项目服务 AK → OpenAI 兼容网关），换到 Magpie / OpenCode 的 provider 插件平面上。装好并登录后，Meoo 的模型会出现在 Magpie 的模型选择器里，也作为 OpenCode 的一个 provider。
 
+## 模型与上下文
+
+网关 `/models` 只回裸 id，不带上下文与输出上限，所以规格由包里那张表给出（数字取自各家官方文档，2026-11 核对）：
+
+| 模型 | 传参值 | 上下文 | 最大输出 | 图片 |
+| --- | --- | --- | --- | --- |
+| Qwen3.8-Flash | `qwen3.8-flash` | 1M | 131072 | ✓ |
+| Qwen3.8-Max | `qwen3.8-max` | 1M | 131072 | ✓ |
+| Qwen3.7-Max | `qwen3.7-max` | 1M | 131072 | |
+| Qwen3.7-Plus | `qwen3.7-plus` | 1M | 131072 | ✓ |
+| DeepSeek V4.1 Flash | `deepseek-v4.1-flash-1017` | 1M | 384K | ✓ |
+| DeepSeek V4 Pro | `deepseek-v4-pro-0813` | 1M | 384K | |
+| DeepSeek V4 Flash | `deepseek-v4-flash-0731` | 1M | 384K | |
+| GLM-5.2-Fast | `glm-5.2-fast-preview` | 1M | 128K | |
+| GLM-5.2 | `glm-5.2` | 1M | 128K | |
+| Qwen VL（视觉理解） | `qwen3-vl-plus` | 262144 | 32768 | ✓ |
+
+两点和别家插件不一样，值得知道：
+
+- **`qwen3-vl-plus` 不在网关 `/models` 里**，但 Meoo 文档给了、网关也接（实测可调）。插件拉目录时会用一次 1-token 的探针试它，接了就补进目录，否则不提——不写死一个调不通的模型。
+- **目录里出现表外的新模型**按保守值给（200K 上下文 / 64K 输出、纯文本），不会把 1M 随手许出去；要正式支持就把它加进 `MODEL_SPECS`。
+
+## 余额
+
+浏览器授权登录后，供应商卡片会带一张积分卡（控制面 `/open/v1/cli-compat/account/points`）：
+
 ```
-Qwen3.8-Flash · Qwen3.8-Max · Qwen3.7-Max · Qwen3.7-Plus
-DeepSeek V4.1 Flash · DeepSeek V4 Pro · DeepSeek V4 Flash
-GLM-5.2 · GLM-5.2-Fast
+Fishundersea · 58,847 积分 · 2026-11-10 到期
+已用 2,153 积分
 ```
+
+按 magpie 的**预付费钱包**窗口给出：窗口只有 `balance` + `unit`、不写 `used`/`limit`，所以卡片显示数字而不是百分比条；`runsOutAt` 是最近一批还没用完的积分的到期日。手填项目服务 AK 的登录读不到积分账户，卡片会说明要用浏览器授权。
 
 ## 思考强度
 
