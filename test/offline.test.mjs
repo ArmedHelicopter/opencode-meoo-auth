@@ -581,6 +581,39 @@ test("refresh 钩子：oauth 账号续期并保留 AK/项目字段；api 账号�
   }, [[/\/oauth\/token/, () => json(OK_TOKEN)]])
 })
 
+test("refresh 钩子：invalid_grant 抛 signIn 'expired'，让宿主标记重新登录而不是无限重试", async () => {
+  // 报障场景：Meoo 对已作废的 refresh token 回 HTTP 400 invalid_grant。
+  // 宿主只有读到错误的 signIn:"expired" 才会把账号标为失效并停止退避重试。
+  const { hooks } = await plugin()
+  const auth = {
+    type: "oauth", apiBase: "https://meoo.test", access: "acc-old", refresh: "ref-dead",
+    expires: Date.now() - 1000,
+  }
+  await withFetch(async () => {
+    await assert.rejects(() => hooks.auth.refresh(auth), (e) => {
+      assert.equal(e.signIn, "expired")
+      assert.equal(e.code, "invalid_grant")
+      assert.match(e.message, /invalid_grant/)
+      return true
+    })
+  }, [[/\/oauth\/token/, () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } })]])
+})
+
+test("refresh 钩子：瞬时失败（非 invalid_grant）不标 expired，可退避重试", async () => {
+  const { hooks } = await plugin()
+  const auth = {
+    type: "oauth", apiBase: "https://meoo.test", access: "acc-old", refresh: "ref-tmp",
+    expires: Date.now() - 1000,
+  }
+  await withFetch(async () => {
+    await assert.rejects(() => hooks.auth.refresh(auth), (e) => {
+      assert.equal(e.signIn, undefined)
+      assert.doesNotMatch(e.message, /invalid_grant/)
+      return true
+    })
+  }, [[/\/oauth\/token/, () => new Response("temporary", { status: 500 })]])
+})
+
 // ---- 余额（usage）-----------------------------------------------------------
 
 test("usage：积分按钱包窗口给出（余额/已用/最近到期）", async () => {

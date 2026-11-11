@@ -158,7 +158,18 @@ async function tokenRequest(apiBaseUrl, params) {
   try {
     json = JSON.parse(text)
   } catch {}
-  if (!res.ok) throw new Error(`OAuth 换票失败 HTTP ${res.status}: ${json.error || text.slice(0, 160)}`)
+  if (!res.ok) {
+    const err = new Error(`OAuth 换票失败 HTTP ${res.status}: ${json.error || text.slice(0, 160)}`)
+    if (json.error) err.code = json.error
+    // invalid_grant 是 OAuth 的终态：refresh token 已被作废，重试也不会好。
+    // 宿主读到 signIn:"expired" 会把账号标为需要重新登录并停止退避重试，
+    // 否则它会照着 auth.refresh 的一次失败继续每分钟重试一个死的 token。
+    if (json.error === "invalid_grant" || (!json.error && res.status === 400 && /invalid_grant/.test(text))) {
+      err.signIn = "expired"
+      err.code = "invalid_grant"
+    }
+    throw err
+  }
   return json
 }
 
