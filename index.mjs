@@ -854,6 +854,12 @@ export const MeooAuthPlugin = async ({ client }) => {
     auth: {
       provider: PROVIDER_ID,
       refreshLead: LEAD_MS,
+      // Meoo 每次续期都换一个新的 refresh token，旧的立刻作废（实测 2026-11：
+      // 登录时的 c52cd8a49eb0 在一次自动续期后变成 049aaf11569b）。所以这个登录态
+      // 不能被复制到另一台机器或另一个进程去并行续期——两个主人抢一个一次性 token，
+      // 输的那个拿到 HTTP 400 invalid_grant，且无法自愈。宿主读到 rotating: true 就不
+      // 会把它带去同步或备份（magpie-community/plugins#884）。
+      rotating: true,
       async refresh(auth) {
         if (auth?.type !== "oauth" || !auth.refresh) return undefined
         const { a, didRenew } = await currentAuth(ctx, auth, true)
