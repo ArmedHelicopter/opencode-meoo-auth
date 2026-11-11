@@ -197,6 +197,7 @@ async function renewToken(a, save) {
   const key = a.refresh
   const done = renewed.get(key)
   if (done && Date.now() - done.at < KEEP_RENEWED_MS) {
+    // 这一代已经在缓存里（换票时存过一次），把它存回宿主
     const merged = { ...a, ...done.next }
     await save?.(merged)
     return merged
@@ -205,15 +206,19 @@ async function renewToken(a, save) {
   if (!r) {
     r = (async () => {
       const next = await callRefreshApi(a)
+      // 存成功之后才放进缓存：Meoo 的 refresh token 每次续期都换新的，旧的立刻
+      // 作废，所以这一代 token 只有一份。存回宿主失败时（persistOf 会抛），若
+      // 这里已经缓存了它，60 秒后缓存过期，这一代就彻底丢了——下一次续期会带着
+      // 已经作废的旧 token，得到 invalid_grant，且看起来与"服务端吊销"一样。
+      await save?.({ ...a, ...next })
       renewed.set(key, { next, at: Date.now() })
       return next
     })().finally(() => renewing.delete(key))
     renewing.set(key, r)
   }
+  // 换票那一趟已经存过（上面）；走到这里的都是缓存里已有结果，那条路也存过。
   const next = await r
-  const merged = { ...a, ...next }
-  await save?.(merged)
-  return merged
+  return { ...a, ...next }
 }
 
 // Meoo 的 access token 过期时间是登录/续期时给的 expires_in，不是 JWT 声明；
@@ -397,7 +402,11 @@ async function serviceAkOf(ctx, a) {
   const urlId = await pickProject(ctx, a)
   if (a?.serviceAk && a.serviceAkProjectId === urlId) return a.serviceAk
   const { urlId: resolved, ak } = await resolveServiceAk(ctx, a, { projectUrlId: urlId })
-  await persistOf(ctx)({ ...a, projectUrlId: resolved, serviceAk: ak, serviceAkProjectId: resolved })
+  // 这里存的是 AK，不是换来的 token：存不住只是下次要再解析一次，AK 这一趟已经
+  // 拿到了，所以不让它把整个操作拖垮。token 那边的存不住是致命的，那边不吞。
+  try {
+    await persistOf(ctx)({ ...a, projectUrlId: resolved, serviceAk: ak, serviceAkProjectId: resolved })
+  } catch {}
   return ak
 }
 
@@ -809,11 +818,32 @@ function manualKeySignIn() {
 
 // ---- 插件出口 ---------------------------------------------------------------
 
+/**
+ * 把更新后的账号记录存回宿主。
+ *
+ * 存不回是致命的，不能吞掉：Meoo 的 refresh token 每次续期都换新的，旧的立刻
+ * 作废（实测 2026-11）。续期成功但没存回去，下一次就会带着已经作废的 token 去
+ * 换票，拿到 HTTP 400 invalid_grant，而这次失败看起来和"token 被服务端吊销"
+ * 一模一样，很难分辨。所以这里把失败报出去，让宿主和日志知道凭据没落盘。
+ *
+ * 宿主没有告诉插件"这个账号已经登出了"的办法（auth.set 在账号被登出时照样
+ * 返回成功），所以这里只能把写入本身抛出来的错误报出去：磁盘写不进去时宿主
+ * 会抛，那才是真正丢凭据的情况。账号被登出时宿主不抛，插件也就跟着不报错，
+ * 那是本来的结果。
+ */
 function persistOf(ctx) {
   return async (updated) => {
     try {
       await ctx?.client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: updated })
-    } catch {}
+    } catch (e) {
+      const err = new Error(
+        `Meoo 登录态没能存回宿主（换到的凭据可能已经作废，请重新登录）：${e?.message ?? e}`,
+      )
+      err.cause = e
+      // 存不回凭据和凭据被拒一样，再试一次也没用
+      err.signIn = "expired"
+      throw err
+    }
   }
 }
 
@@ -953,8 +983,7 @@ export const _internal = {
   tokenRequest,
   renewToken,
   currentAuth,
-  isStale,
-  controlCall,
+  isStale,  controlCall,
   controlRequest,
   fetchIdentity,
   listProjects,
